@@ -76,6 +76,7 @@ def make_safety_gym_env(name, episode_length, rendered):
     env.unwrapped.observe_vision = rendered
     env.unwrapped.vision_render = False
     obs_vision_swap = env.unwrapped.obs_vision
+    obs_vision_back_swap = env.unwrapped.obs_vision_back
 
     # Making rendering within obs() function (in safety_gym) not actually render the scene on
     # default so that rendering only occur upon calling to 'render()'.
@@ -88,14 +89,18 @@ def make_safety_gym_env(name, episode_length, rendered):
             image = Image.fromarray(np.array(obs_vision_swap() * 255, dtype=np.uint8,
                                              copy=False))
             image = np.asarray(ImageOps.flip(image))
-            return image
+
+            image2 = Image.fromarray(np.array(obs_vision_back_swap() * 255, dtype=np.uint8,
+                                             copy=False))
+            image2 = np.asarray(ImageOps.flip(image2))
+            return (image, image2)
 
     env.unwrapped.obs_vision = render_obs
 
     def safety_gym_render(mode, **kwargs):
         if mode in ['human', 'rgb_array']:
             # Use regular rendering
-            return env.unwrapped.render(mode, camera_id=3, **kwargs)
+            return env.unwrapped.render(mode, camera_id='fixedfar', **kwargs)
         elif mode == 'vision':
             return render_obs(fake=False)
         else:
@@ -182,15 +187,25 @@ class RenderedObservation(ObservationWrapper):
 
     def observation(self, _):
         image = self.env.render(**self._render_kwargs)
-        image = Image.fromarray(image)
+        image1 = Image.fromarray(image[0])
+        image2 = Image.fromarray(image[1])
+
         if self._crop:
             w, h = image.size
-            image = image.crop((self._crop[0], self._crop[1], w - self._crop[2], h - self._crop[3]))
-        if image.size != self._size:
-            image = image.resize(self._size, Image.BILINEAR)
+            image1 = image1.crop((self._crop[0], self._crop[1], w - self._crop[2], h - self._crop[3]))
+            image2 = image2.crop((self._crop[0], self._crop[1], w - self._crop[2], h - self._crop[3]))
+
+        if image1.size != self._size:
+            image1 = image1.resize(self._size, Image.BILINEAR)
+            image2 = image2.resize(self._size, Image.BILINEAR)
+
         if self._type == 'binary_image':
-            image = image.convert('L')
-        image = np.array(image, copy=False)
-        image = np.clip(image, 0, 255).astype(np.float32)
+            image1 = image1.convert('L')
+            image2 = image2.convert('L')
+
+        image1 = np.array(image1, copy=False)
+        image1 = np.clip(image1, 0, 255).astype(np.float32)
+        image2 = np.array(image2, copy=False)
+        image2 = np.clip(image2, 0, 255).astype(np.float32)
         bias = dict(rgb_image=0.5, binary_image=0.0).get(self._type)
-        return utils.preprocess(image, bias)
+        return (utils.preprocess(image1, bias), utils.preprocess(image2, bias))

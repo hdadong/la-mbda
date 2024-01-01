@@ -18,7 +18,9 @@ class WorldModel(tf.Module):
         self._f = tf.keras.layers.GRUCell(deterministic_size)
         self._observation_encoder = blocks.encoder(observation_type, observation_shape,
                                                    observation_layers, units)
-        self._observation_decoder = blocks.decoder(observation_type, observation_shape, 3, units)
+        self._observation_decoder1 = blocks.decoder(observation_type, observation_shape, 3, units)
+        self._observation_decoder2 = blocks.decoder(observation_type, observation_shape, 3, units)
+
         self._reward_decoder = blocks.DenseDecoder((), reward_layers, units, activation)
         self._safety = safety
         if self._safety:
@@ -40,12 +42,14 @@ class WorldModel(tf.Module):
         self._mix = tf.constant(mix, self._dtype)
         self._kl_scale = tf.constant(kl_scale, self._dtype)
 
-    def __call__(self, prev_action, current_observation, features):
+    def __call__(self, prev_action, current_observation1, current_observation2, features):
         d_t = features[:, self._stochastic_size:]
         z_t = features[:, :self._stochastic_size]
         _, _, d_t = self._predict(z_t, d_t, prev_action[None, ...])
-        embeddings = self._observation_encoder(current_observation[None, None, ...])
-        _, z_t = self._correct(d_t, embeddings[0])
+        embeddings1 = self._observation_encoder(current_observation1[None, None, ...])
+        embeddings2 = self._observation_encoder(current_observation2[None, None, ...])
+
+        _, z_t = self._correct(d_t, embeddings1[0], embeddings2[0])
         updated_features = tf.concat([z_t, d_t], -1)
         return updated_features
 
@@ -58,9 +62,9 @@ class WorldModel(tf.Module):
         z_t = prior.sample()
         return prior, z_t, d_t
 
-    def _correct(self, prev_deterministic, embeddings):
+    def _correct(self, prev_deterministic, embeddings1, embeddings2):
         posterior_mu, posterior_stddev = tf.split(
-            self._posterior_decoder(tf.concat([prev_deterministic, embeddings], -1)), 2, -1)
+            self._posterior_decoder(tf.concat([prev_deterministic, embeddings1, embeddings2], -1)), 2, -1)
         posterior_stddev = tf.math.softplus(posterior_stddev) + 0.1
         posterior = tfd.MultivariateNormalDiag(posterior_mu, posterior_stddev)
         z_t = posterior.sample()
@@ -72,9 +76,11 @@ class WorldModel(tf.Module):
         return initial
 
     def _observe_sequence(self, batch):
-        embeddings = self._observation_encoder(batch['observation'][:, 1:])
+        embeddings1 = self._observation_encoder(batch['observation1'][:, 1:])
+        embeddings2 = self._observation_encoder(batch['observation2'][:, 1:])
+
         actions = batch['action']
-        horizon = tf.shape(embeddings)[1]
+        horizon = tf.shape(embeddings1)[1]
         inferred = {'stochastics': tf.TensorArray(self._dtype, horizon),
                     'deterministics': tf.TensorArray(self._dtype, horizon),
                     'prior_mus': tf.TensorArray(self._dtype, horizon),
@@ -86,7 +92,7 @@ class WorldModel(tf.Module):
         z_t = state['stochastic']
         for t in range(horizon):
             prior, _, d_t = self._predict(z_t, d_t, actions[:, t])
-            posterior, z_t = self._correct(d_t, embeddings[:, t])
+            posterior, z_t = self._correct(d_t, embeddings1[:, t], embeddings2[:, t])
             inferred['stochastics'] = inferred['stochastics'].write(t, z_t)
             inferred['deterministics'] = inferred['deterministics'].write(t, d_t)
             inferred['prior_mus'] = inferred['prior_mus'].write(t, prior.mean())
@@ -107,16 +113,20 @@ class WorldModel(tf.Module):
         kl_loss, kl = balanced_kl_loss(posterior, prior, self._free_nats, self._mix)
         features = tf.concat([beliefs['stochastic'],
                               beliefs['deterministic']], -1)
-        reconstructed = self._observation_decoder(features)
-        log_p_observations = tf.reduce_mean(reconstructed.log_prob(batch['observation'][:, 1:]))
+        reconstructed1 = self._observation_decoder1(features)
+        reconstructed2 = self._observation_decoder2(features)
+
+        log_p_observations1 = tf.reduce_mean(reconstructed1.log_prob(batch['observation1'][:, 1:]))
+        log_p_observations2 = tf.reduce_mean(reconstructed2.log_prob(batch['observation2'][:, 1:]))
+
         log_p_rewards = tf.reduce_mean(
             self._reward_decoder(features).log_prob(batch['reward']))
         log_p_terminals = tf.reduce_mean(
             self._terminal_decoder(features).log_prob(batch['terminal']))
-        loss = self._kl_scale * kl_loss - log_p_observations - log_p_rewards - log_p_terminals
-        results = dict(loss=loss, kl=kl, log_p_observations=log_p_observations,
+        loss = self._kl_scale * kl_loss - log_p_observations1 - log_p_observations2 - log_p_rewards - log_p_terminals
+        results = dict(loss=loss, kl=kl, log_p_observations1=log_p_observations1, log_p_observations2=log_p_observations2,
                        log_p_rewards=log_p_rewards, log_p_terminals=log_p_terminals,
-                       reconstructed=reconstructed, beliefs=beliefs)
+                       reconstructed1=reconstructed1, reconstructed2=reconstructed2, beliefs=beliefs)
         if self._safety:
             unsafe = tf.greater_equal(batch['cost'], 1.0)
             log_p_cost = self._cost_decoder(features).log_prob(tf.cast(unsafe, self._dtype))
@@ -144,7 +154,9 @@ class WorldModel(tf.Module):
             sequence_features = sequence_features.write(t, features)
         stacked = {'features': tf.transpose(sequence_features.stack(), [1, 0, 2])}
         if log_sequences:
-            stacked['reconstructed_observation'] = self._observation_decoder(
+            stacked['reconstructed_observation1'] = self._observation_decoder1(
+                stacked['features']).mean()
+            stacked['reconstructed_observation2'] = self._observation_decoder2(
                 stacked['features']).mean()
         stacked['reward'] = self._reward_decoder(stacked['features']).mean()
         stacked['terminal'] = self._terminal_decoder(stacked['features']).mean()

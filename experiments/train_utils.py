@@ -63,7 +63,7 @@ def define_config():
         'seed': 314,
         'episode_length': 1000,
         'training_steps_per_epoch': 25000,
-        'evaluation_steps_per_epoch': 10000,
+        'evaluation_steps_per_epoch': 1000,
         'log_dir': 'runs',
         'render_episodes': 1,
         'evaluate_model': False,
@@ -93,10 +93,14 @@ def evaluate(agent, train_env, logger, config, steps):
                           evaluation_episodes_summaries[:config.render_episodes]))
         logger.log_video(np.array(videos, copy=False).transpose([0, 1, 4, 2, 3]), steps)
         if config.observation_type in ['rgb_image', 'binary_image']:
-            videos = list(map(lambda episode: episode.get('observation'),
+            videos = list(map(lambda episode: episode.get('observation1'),
                               evaluation_episodes_summaries[:config.render_episodes]))
             logger.log_video(np.array(videos, copy=False).transpose([0, 1, 4, 2, 3]) + 0.5, steps,
-                             name='observation')
+                             name='observation1')
+            videos = list(map(lambda episode: episode.get('observation2'),
+                              evaluation_episodes_summaries[:config.render_episodes]))
+            logger.log_video(np.array(videos, copy=False).transpose([0, 1, 4, 2, 3]) + 0.5, steps,
+                             name='observation2')
     if config.evaluate_model:
         utils.evaluate_model(evaluation_episodes_summaries, agent.model, logger,
                              config.observation_type, steps)

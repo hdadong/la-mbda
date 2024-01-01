@@ -80,8 +80,8 @@ class SwagWorldModel(BayesianWorldModel):
         return self._model.variables + self.optimizer.variables
 
     @tf.function
-    def _update_beliefs(self, prev_action, current_observation, belief):
-        features = self._model(prev_action, current_observation, belief)
+    def _update_beliefs(self, prev_action, current_observation1, current_observation2, belief):
+        features = self._model(prev_action, current_observation1, current_observation2, belief)
         return features[:, None]
 
     @tf.function
@@ -91,7 +91,9 @@ class SwagWorldModel(BayesianWorldModel):
                             'reward': [],
                             'terminal': []}
         if log_sequences:
-            samples_rollouts['reconstructed_observation'] = []
+            samples_rollouts['reconstructed_observation1'] = []
+            samples_rollouts['reconstructed_observation2'] = []
+
         if self._config.safety:
             samples_rollouts['cost'] = []
         with WeightsSampler(self.optimizer) as sampler:
@@ -107,18 +109,24 @@ class SwagWorldModel(BayesianWorldModel):
 
     @tf.function
     def _reconstruct_sequences_posterior(self, batch):
-        samples_reconstructed = []
+        samples_reconstructed1 = []
+        samples_reconstructed2 = []
+
         samples_beliefs = []
         with WeightsSampler(self.optimizer) as sampler:
             for i in range(self._posterior_samples):
                 sampler.sample(self._config.sampling_scale)
                 results = self._model.inference_step(batch)
-                samples_reconstructed.append(results['reconstructed'].mean())
+                samples_reconstructed1.append(results['reconstructed1'].mean())
+                samples_reconstructed2.append(results['reconstructed2'].mean())
+
                 samples_beliefs.append(results['beliefs'])
         sequence_data = {k: tf.stack(
             [belief[k] for belief in samples_beliefs], 1) for k in
             samples_beliefs[0].keys()}
-        sequence_data['reconstructed_observation'] = tf.stack(samples_reconstructed, 1)
+        sequence_data['reconstructed_observation1'] = tf.stack(samples_reconstructed1, 1)
+        sequence_data['reconstructed_observation2'] = tf.stack(samples_reconstructed2, 1)
+
         return sequence_data
 
     @tf.function
@@ -127,7 +135,8 @@ class SwagWorldModel(BayesianWorldModel):
             results = self._model.inference_step(batch)
         grads = model_tape.gradient(results['loss'], self._model.trainable_variables)
         self.optimizer.apply_gradients(zip(grads, self._model.trainable_variables))
-        self._logger['agent/observation_log_p'].update_state(-results['log_p_observations'])
+        self._logger['agent/observation_log_p1'].update_state(-results['log_p_observations1'])
+        self._logger['agent/observation_log_p2'].update_state(-results['log_p_observations2'])
         self._logger['agent/rewards_log_p'].update_state(-results['log_p_rewards'])
         self._logger['agent/terminals_log_p'].update_state(-results['log_p_terminals'])
         self._logger['agent/kl'].update_state(results['kl'])

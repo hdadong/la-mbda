@@ -65,18 +65,22 @@ def do_episode(agent, training, environment, config, pbar, render, reset_functio
     steps = 0
     done = False
     while not done:
-        action = agent(observation, training)
+        action = agent(observation[0], observation[1], training)
         next_observation, reward, done, info = environment.step(action)
         terminal = done and not info.get('TimeLimit.truncated', False)
         if training:
-            agent.observe(dict(observation=observation.astype(np.float32),
-                               next_observation=next_observation.astype(np.float32),
+            agent.observe(dict(observation1=observation[0].astype(np.float32),
+                               next_observation1=next_observation[0].astype(np.float32),
+                               observation2=observation[1].astype(np.float32),
+                               next_observation2=next_observation[1].astype(np.float32),
                                action=action.astype(np.float32),
                                reward=np.array(reward, np.float32),
                                terminal=np.array(terminal, np.bool),
                                info=info))
-        episode_summary['observation'].append(observation)
-        episode_summary['next_observation'].append(next_observation)
+        episode_summary['observation1'].append(observation[0])
+        episode_summary['next_observation1'].append(next_observation[0])
+        episode_summary['observation2'].append(observation[1])
+        episode_summary['next_observation2'].append(next_observation[1])
         episode_summary['action'].append(action)
         episode_summary['reward'].append(reward)
         episode_summary['terminal'].append(terminal)
@@ -164,17 +168,23 @@ def standardize_video(sequence, modality, transpose=True):
 
 def evaluate_model(ground_truth_sequence, model, logger, observation_type, step):
     dtype = prec.global_policy().compute_dtype
-    sequence_length = min(50, len(ground_truth_sequence[0]['next_observation']) + 1)
+    sequence_length = min(50, len(ground_truth_sequence[0]['next_observation1']) + 1)
     gt_episode = {k: tf.convert_to_tensor(v, dtype)[None, :sequence_length]
-                  for k, v in ground_truth_sequence[0].items() if k in ['observation',
+                  for k, v in ground_truth_sequence[0].items() if k in ['observation1', 'observation2',
                                                                         'action', 'terminal',
                                                                         'reward']}
     if 'cost' in ground_truth_sequence[0]['info'][-1].keys():
         gt_episode['cost'] = tf.convert_to_tensor(list(map(
             lambda info: info['cost'], ground_truth_sequence[0]['info'])))
-    gt_episode['observation'] = tf.concat(
-        [gt_episode['observation'],
-         tf.convert_to_tensor(ground_truth_sequence[0]['next_observation'][sequence_length],
+    gt_episode['observation1'] = tf.concat(
+        [gt_episode['observation1'],
+         tf.convert_to_tensor(ground_truth_sequence[0]['next_observation1'][sequence_length],
+                              dtype)
+         [None, None]], 1
+    )
+    gt_episode['observation2'] = tf.concat(
+        [gt_episode['observation2'],
+         tf.convert_to_tensor(ground_truth_sequence[0]['next_observation2'][sequence_length],
                               dtype)
          [None, None]], 1
     )
@@ -189,21 +199,35 @@ def evaluate_model(ground_truth_sequence, model, logger, observation_type, step)
         last_belief, horizon, actions=gt_episode['action'][:, conditioning_length:],
         log_sequences=True)
     if observation_type in ['rgb_image', 'binary_image']:
-        reconstructed = tf.squeeze(reconstructed_sequence['reconstructed_observation'], 0)
-        generated = tf.squeeze(generated['reconstructed_observation'], 0)
+        reconstructed = tf.squeeze(reconstructed_sequence['reconstructed_observation1'], 0)
+        generated = tf.squeeze(generated['reconstructed_observation1'], 0)
         logger.log_video(standardize_video(reconstructed, observation_type).numpy(), step,
-                         "reconstructed_sequence")
-        logger.log_video(standardize_video(gt_episode['observation'], observation_type).numpy(),
-                         step, "true_sequence")
+                         "reconstructed_sequence1")
+        logger.log_video(standardize_video(gt_episode['observation1'], observation_type).numpy(),
+                         step, "true_sequence1")
         logger.log_video(standardize_video(generated, observation_type).numpy(), step,
-                         "generated_sequence")
-    else:
-        generated = tf.reduce_mean(generated['reconstructed_observation'], 1)
-        predictions = generated.numpy()[0]
-        targets = gt_episode['observation'][0, conditioning_length:].numpy()
-        logger.log_figure(plot_prediction_ground_truth(targets, predictions),
-                          step, "ground_truth_vs_generated")
+                         "generated_sequence1")
 
+        reconstructed = tf.squeeze(reconstructed_sequence['reconstructed_observation2'], 0)
+        generated = tf.squeeze(generated['reconstructed_observation2'], 0)
+        logger.log_video(standardize_video(reconstructed, observation_type).numpy(), step,
+                         "reconstructed_sequence2")
+        logger.log_video(standardize_video(gt_episode['observation2'], observation_type).numpy(),
+                         step, "true_sequence2")
+        logger.log_video(standardize_video(generated, observation_type).numpy(), step,
+                         "generated_sequence2")
+    else:
+        generated = tf.reduce_mean(generated['reconstructed_observation1'], 1)
+        predictions = generated.numpy()[0]
+        targets = gt_episode['observation1'][0, conditioning_length:].numpy()
+        logger.log_figure(plot_prediction_ground_truth(targets, predictions),
+                          step, "ground_truth_vs_generated1")
+
+        generated = tf.reduce_mean(generated['reconstructed_observation2'], 1)
+        predictions = generated.numpy()[0]
+        targets = gt_episode['observation2'][0, conditioning_length:].numpy()
+        logger.log_figure(plot_prediction_ground_truth(targets, predictions),
+                          step, "ground_truth_vs_generated2")
 
 def plot_prediction_ground_truth(ground_truth, prediction):
     fig = plt.figure(figsize=(11, 3.5), constrained_layout=True)

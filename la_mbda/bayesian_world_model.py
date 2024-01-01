@@ -7,9 +7,9 @@ class BayesianWorldModel(tf.Module):
         self._logger = logger
         self._config = config
 
-    def __call__(self, prev_action, current_observation, belief):
+    def __call__(self, prev_action, current_observation1, current_observation2, belief):
         current_beliefs = self._update_beliefs(
-            prev_action, current_observation, belief)
+            prev_action, current_observation1, current_observation2, belief)
         return current_beliefs
 
     def generate_sequences_posterior(self, initial_belief, horizon, actor=None, actions=None,
@@ -29,7 +29,7 @@ class BayesianWorldModel(tf.Module):
     def reset(self):
         raise NotImplementedError
 
-    def _update_beliefs(self, prev_action, current_observation, belief):
+    def _update_beliefs(self, prev_action, current_observation1, current_observation2, belief):
         raise NotImplementedError
 
     def _generate_sequences_posterior(self, initial_belief, horizon, actor,

@@ -31,7 +31,7 @@ class LAMBDA(tf.Module):
         if config.safety:
             self.safety_critic = models.SafetyCritic(config, 3)
 
-    def __call__(self, observation, training=True):
+    def __call__(self, observation1, observation2, training=True):
         if not self.warm or not self.pretrained_model:
             action = self._warmup_policy()
         if self.warm:
@@ -45,19 +45,25 @@ class LAMBDA(tf.Module):
                 self._logger.log_metrics(self.training_step)
             if self.time_to_clone_critic:
                 self._clone_critics()
-            action = self.policy(tf.constant(observation, self._dtype), training).numpy()
+            action = self.policy(tf.constant(observation1, self._dtype), tf.constant(observation2, self._dtype), training).numpy()
         return np.clip(action, -1.0, 1.0)
 
     @tf.function
-    def policy(self, observation, training=True):
+    def policy(self, observation1, observation2, training=True):
         if self._config.observation_type == 'dense':
-            observation = utils.normalize_clip(
-                tf.cast(observation, self._dtype),
-                tf.cast(tf.convert_to_tensor(self._experience.observation_mean), self._dtype),
-                tf.cast(tf.sqrt(tf.convert_to_tensor(self._experience.observation_variance)),
+            observation1 = utils.normalize_clip(
+                tf.cast(observation1, self._dtype),
+                tf.cast(tf.convert_to_tensor(self._experience.observation_mean1), self._dtype),
+                tf.cast(tf.sqrt(tf.convert_to_tensor(self._experience.observation_variance1)),
                         self._dtype),
                 10.0)
-        current_belief_posterior = self.model(self._prev_action, observation, self._current_belief)
+            observation2 = utils.normalize_clip(
+                tf.cast(observation2, self._dtype),
+                tf.cast(tf.convert_to_tensor(self._experience.observation_mean2), self._dtype),
+                tf.cast(tf.sqrt(tf.convert_to_tensor(self._experience.observation_variance2)),
+                        self._dtype),
+                10.0)
+        current_belief_posterior = self.model(self._prev_action, observation1, observation2, self._current_belief)
         self._current_belief.assign(tf.reduce_mean(current_belief_posterior, 1))
         policy = self.actor(self._current_belief)
         action = policy.sample() if training else policy.mode()
